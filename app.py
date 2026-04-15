@@ -14,7 +14,10 @@ import requests
 import aiohttp
 from PIL import Image, ImageDraw, ImageFont
 
-from fastapi import FastAPI, Request, HTTPException
+
+from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, HTTPExceptio
+from aiogram.types import Update
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -2882,24 +2885,23 @@ async def on_bot_member_update(e: types.ChatMemberUpdated):
 
 # ================= WEBHOOK / HEALTH =================
 @app.post("/webhook")
-async def webhook(req: Request):
-    if TELEGRAM_SECRET_TOKEN:
-        secret = req.headers.get("x-telegram-bot-api-secret-token", "")
-        if secret != TELEGRAM_SECRET_TOKEN:
-            print("webhook secret mismatch")
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
+async def telegram_webhook(request: Request):
     try:
-        data = await req.json()
-        update = types.Update.model_validate(data)
-        await dp.feed_update(bot, update)
-        return {"ok": True}
-    except Exception as e:
-        print("webhook error:", e)
-        traceback.print_exc()
-        return {"ok": False, "error": str(e)}
+        data = await request.json()
 
-@app.get("/healthz")
+        update = Update.model_validate(data)
+
+        await dp.feed_update(bot, update)
+
+        return JSONResponse({"ok": True})
+
+    except Exception as e:
+        import traceback
+        print("WEBHOOK ERROR:")
+        traceback.print_exc()
+
+        return JSONResponse({"ok": False})
+        
 @app.head("/healthz")
 def healthz():
     return {"ok": True}
