@@ -1,240 +1,174 @@
-import os
+# ===== IMPORT =====
+import os, time, json, asyncio
 from html import escape
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, RedirectResponse
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
 
-app = FastAPI()
+from fastapi import FastAPI, Query, HTTPException, Form, WebSocket
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from dotenv import load_dotenv
+import uvicorn
 
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Image
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
+import qrcode
 
-def page_shell(title: str, body_html: str):
+from db import *
+
+# ===== ENV =====
+load_dotenv()
+PORT = int(os.getenv("PORT", "8080"))
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+# ===== SESSION FILE =====
+SESSION_FILE = "sessions.json"
+
+def load_sessions():
+    try:
+        return json.load(open(SESSION_FILE))
+    except:
+        return {}
+
+def save_sessions(s):
+    json.dump(s, open(SESSION_FILE,"w"))
+
+SESSIONS = load_sessions()
+
+# ===== APP =====
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+# ===== LOGIN =====
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return """
+    <form method="post" style="padding:80px">
+        <h2>VIP LOGIN</h2>
+        <input name="user"><br><br>
+        <input name="password" type="password"><br><br>
+        <button>Login</button>
+    </form>
+    """
+
+@app.post("/login")
+def do_login(user: str = Form(...), password: str = Form(...)):
+    if user=="vip" and password=="000":
+        token=str(time.time())
+        SESSIONS[token]=True
+        save_sessions(SESSIONS)
+        return RedirectResponse(f"/vip000.bot?session={token}",303)
+    return HTMLResponse("Login fail",401)
+
+def require_login(session):
+    if session not in SESSIONS:
+        raise HTTPException(401)
+
+# ===== DASHBOARD =====
+def page(body):
     return HTMLResponse(f"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+    <html>
+    <head>
+    <style>
+    body{{background:#0f172a;color:white;font-family:Arial}}
+    .card{{padding:20px;margin:10px;background:#1e293b;border-radius:16px;
+    box-shadow:0 0 30px rgba(37,99,235,.3)}}
+    </style>
+    </head>
+    <body>{body}</body>
+    </html>
+    """)
 
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+@app.get("/vip000.bot")
+def dashboard(session: str = Query(None)):
+    require_login(session)
 
-<style>
-:root {{
---bg: linear-gradient(135deg,#020617,#0f172a);
---panel: rgba(17,24,39,.7);
---panel-2: rgba(31,41,55,.7);
---border: rgba(255,255,255,.08);
+    stats = get_dashboard_stats()
 
---text:#e5e7eb;
---muted:#9ca3af;
+    body=f"""
+    <h1>VIP DASHBOARD</h1>
 
---blue:#3b82f6;
---green:#22c55e;
---red:#ef4444;
-}}
+    <div class="card">Users: {stats["total_users"]}</div>
+    <div class="card">Active: {stats["active_users"]}</div>
 
-* {{
-box-sizing:border-box;
-transition:.2s;
-}}
+    <div class="card">
+    <a href="/export/pdf">🧾 Export PDF</a>
+    </div>
 
-body {{
-margin:0;
-font-family:'Inter',sans-serif;
-background:var(--bg);
-color:var(--text);
-display:flex;
-}}
+    <div class="card">
+    <canvas id="chart"></canvas>
+    </div>
 
-/* SIDEBAR */
-.sidebar {{
-width:240px;
-height:100vh;
-position:fixed;
-background:rgba(2,6,23,.9);
-border-right:1px solid var(--border);
-padding:20px;
-}}
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    fetch('/api/stats').then(r=>r.json()).then(d=>{
+        new Chart(document.getElementById('chart'),{{
+            type:'bar',
+            data:{{
+                labels:d.map(x=>x.date),
+                datasets:[{{label:'Income',data:d.map(x=>x.value)}}]
+            }}
+        })
+    })
+    </script>
+    """
 
-.logo {{
-font-weight:700;
-margin-bottom:20px;
-}}
+    return page(body)
 
-.nav a {{
-display:block;
-padding:10px;
-border-radius:10px;
-color:var(--muted);
-text-decoration:none;
-}}
+# ===== API =====
+@app.get("/api/stats")
+def stats():
+    now=datetime.now(BEIJING_TZ)
+    arr=[]
+    for i in range(7):
+        arr.append({"date":str(i),"value":i*10})
+    return arr
 
-.nav a:hover {{
-background:var(--panel-2);
-color:white;
-}}
+# ===== PDF =====
+@app.get("/export/pdf")
+def export_pdf():
+    path="/mnt/data/vip.pdf"
+    doc=SimpleDocTemplate(path)
+    el=[]
 
-/* MAIN */
-.main {{
-margin-left:240px;
-width:100%;
-padding:24px;
-}}
+    el.append(Paragraph("VIP REPORT", getSampleStyleSheet()["Title"]))
 
-.container {{
-max-width:1200px;
-margin:auto;
-}}
+    qr=qrcode.make("VIP VERIFY")
+    qr.save("/mnt/data/qr.png")
+    el.append(Image("/mnt/data/qr.png",100,100))
 
-/* CARD */
-.card {{
-background:var(--panel);
-border-radius:16px;
-padding:16px;
-border:1px solid var(--border);
-}}
+    data=[["User","Amount"]]
+    txs=get_transactions(None)
+    for t in txs:
+        data.append([str(t[3]),str(t[8])])
 
-.card:hover {{
-transform:translateY(-4px);
-}}
+    table=Table(data)
+    table.setStyle(TableStyle([("GRID",(0,0),(-1,-1),1,colors.black)]))
 
-.value {{
-font-size:22px;
-font-weight:600;
-}}
+    el.append(table)
+    doc.build(el)
 
-/* BUTTON */
-.btn {{
-padding:10px 14px;
-border-radius:10px;
-border:none;
-cursor:pointer;
-background:linear-gradient(135deg,#2563eb,#3b82f6);
-color:white;
-}}
+    return FileResponse(path)
 
-.btn.secondary {{
-background:var(--panel-2);
-}}
+# ===== WS =====
+@app.websocket("/ws")
+async def ws(ws:WebSocket):
+    await ws.accept()
+    while True:
+        await ws.send_json(get_dashboard_stats())
+        await asyncio.sleep(3)
 
-/* TABLE */
-table {{
-width:100%;
-border-collapse:collapse;
-margin-top:16px;
-}}
-
-td,th {{
-padding:12px;
-border-bottom:1px solid var(--border);
-}}
-
-tr:hover {{
-background:rgba(255,255,255,.05);
-}}
-
-/* TAG */
-.tag {{
-padding:4px 10px;
-border-radius:999px;
-font-size:12px;
-}}
-
-.ok {{
-background:rgba(34,197,94,.2);
-color:#4ade80;
-}}
-
-.bad {{
-background:rgba(239,68,68,.2);
-color:#f87171;
-}}
-
-@media(max-width:768px){{
-.sidebar{{display:none}}
-.main{{margin-left:0}}
-}}
-</style>
-</head>
-
-<body>
-
-<div class="sidebar">
-<div class="logo">⚡ Admin</div>
-<div class="nav">
-<a href="/dashboard">Dashboard</a>
-<a href="/users">Users</a>
-<a href="/orders">Orders</a>
-<a href="/groups">Groups</a>
-</div>
-</div>
-
-<div class="main">
-<div class="container">
-{body_html}
-</div>
-</div>
-
-</body>
-</html>
-""")
-
-
+# ===== ROOT =====
 @app.get("/")
 def home():
-    return RedirectResponse("/dashboard")
+    return RedirectResponse("/login")
 
-
-@app.get("/dashboard")
-def dashboard():
-    body = """
-    <h1>Dashboard</h1>
-
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
-        <div class="card"><div class="value">120</div><div>Total Users</div></div>
-        <div class="card"><div class="value">87</div><div>Active</div></div>
-        <div class="card"><div class="value">12</div><div>Expired</div></div>
-        <div class="card"><div class="value">34</div><div>Orders</div></div>
-    </div>
-    """
-    return page_shell("Dashboard", body)
-
-
-@app.get("/users")
-def users():
-    body = """
-    <h1>Users</h1>
-
-    <table>
-    <tr><th>ID</th><th>Name</th><th>Status</th></tr>
-    <tr><td>1</td><td>John</td><td><span class="tag ok">Active</span></td></tr>
-    <tr><td>2</td><td>Anna</td><td><span class="tag bad">Expired</span></td></tr>
-    </table>
-    """
-    return page_shell("Users", body)
-
-
-@app.get("/orders")
-def orders():
-    body = """
-    <h1>Orders</h1>
-
-    <table>
-    <tr><th>ID</th><th>Amount</th><th>Status</th></tr>
-    <tr><td>ORD1</td><td>100</td><td><span class="tag ok">Paid</span></td></tr>
-    <tr><td>ORD2</td><td>50</td><td><span class="tag bad">Pending</span></td></tr>
-    </table>
-    """
-    return page_shell("Orders", body)
-
-
-@app.get("/groups")
-def groups():
-    body = """
-    <h1>Groups</h1>
-
-    <table>
-    <tr><th>ID</th><th>Name</th></tr>
-    <tr><td>123</td><td>Group A</td></tr>
-    <tr><td>456</td><td>Group B</td></tr>
-    </table>
-    """
-    return page_shell("Groups", body)
+# ===== RUN =====
+if __name__ == "__main__":
+    uvicorn.run("web_vip:app", host="0.0.0.0", port=PORT)
