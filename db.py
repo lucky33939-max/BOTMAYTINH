@@ -118,12 +118,12 @@ def init_db():
     """)
 
     c.execute("""
-CREATE TABLE IF NOT EXISTS expiry_notice (
-    user_id INTEGER,
-    notice_key TEXT,
-    PRIMARY KEY (user_id, notice_key)
-)
-""")
+    CREATE TABLE IF NOT EXISTS expiry_notice (
+        user_id INTEGER,
+        notice_key TEXT,
+        PRIMARY KEY (user_id, notice_key)
+   )
+   """)
 
     conn.commit()
     conn.close()
@@ -474,7 +474,28 @@ def count_wallet_checks():
     conn.close()
     return count
 
+def has_expiry_notice(user_id, key):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "SELECT 1 FROM expiry_notice WHERE user_id=? AND notice_key=?",
+        (user_id, key)
+    )
+    row = c.fetchone()
+    conn.close()
+    return bool(row)
 
+
+def add_expiry_notice(user_id, key):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute(
+        "INSERT OR IGNORE INTO expiry_notice VALUES (?, ?)",
+        (user_id, key)
+    )
+    conn.commit()
+    conn.close()
+    
 # ================= BUTTON CONFIG =================
 def get_all_button_configs():
     return []
