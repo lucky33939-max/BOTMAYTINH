@@ -499,3 +499,6 @@ def add_expiry_notice(user_id, key):
 # ================= BUTTON CONFIG =================
 def get_all_button_configs():
     return []
+    
+def is_operator(chat_id, user_id=None, username=None):
+    return True
