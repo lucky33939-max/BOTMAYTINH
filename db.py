@@ -4,16 +4,15 @@ import time
 DB_NAME = "data.db"
 
 
-# ================= BASIC =================
 def get_conn():
     return sqlite3.connect(DB_NAME)
 
 
+# ================= INIT =================
 def init_db():
     conn = get_conn()
     c = conn.cursor()
 
-    # settings
     c.execute("""
     CREATE TABLE IF NOT EXISTS settings (
         chat_id INTEGER,
@@ -23,7 +22,6 @@ def init_db():
     )
     """)
 
-    # admins
     c.execute("""
     CREATE TABLE IF NOT EXISTS admins (
         user_id INTEGER PRIMARY KEY,
@@ -31,7 +29,6 @@ def init_db():
     )
     """)
 
-    # groups
     c.execute("""
     CREATE TABLE IF NOT EXISTS groups (
         chat_id INTEGER PRIMARY KEY,
@@ -39,7 +36,6 @@ def init_db():
     )
     """)
 
-    # members
     c.execute("""
     CREATE TABLE IF NOT EXISTS members (
         chat_id INTEGER,
@@ -50,7 +46,6 @@ def init_db():
     )
     """)
 
-    # transactions
     c.execute("""
     CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +66,6 @@ def init_db():
     )
     """)
 
-    # access users
     c.execute("""
     CREATE TABLE IF NOT EXISTS access_users (
         user_id INTEGER PRIMARY KEY,
@@ -82,7 +76,6 @@ def init_db():
     )
     """)
 
-    # rental orders
     c.execute("""
     CREATE TABLE IF NOT EXISTS rental_orders (
         order_code TEXT PRIMARY KEY,
@@ -102,7 +95,6 @@ def init_db():
     )
     """)
 
-    # trial code
     c.execute("""
     CREATE TABLE IF NOT EXISTS trial_code (
         id INTEGER PRIMARY KEY,
@@ -110,14 +102,28 @@ def init_db():
     )
     """)
 
-    # expiry notice
     c.execute("""
-    CREATE TABLE IF NOT EXISTS expiry_notice (
-        user_id INTEGER,
-        notice_key TEXT,
-        PRIMARY KEY (user_id, notice_key)
+    CREATE TABLE IF NOT EXISTS trial_users (
+        user_id INTEGER PRIMARY KEY
     )
     """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS wallet_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        address TEXT,
+        result TEXT,
+        created_at INTEGER
+    )
+    """)
+
+    c.execute("""
+CREATE TABLE IF NOT EXISTS expiry_notice (
+    user_id INTEGER,
+    notice_key TEXT,
+    PRIMARY KEY (user_id, notice_key)
+)
+""")
 
     conn.commit()
     conn.close()
@@ -137,8 +143,7 @@ def set_setting(chat_id, key, value):
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-    INSERT INTO settings (chat_id, key, value)
-    VALUES (?, ?, ?)
+    INSERT INTO settings VALUES (?, ?, ?)
     ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value
     """, (chat_id, key, str(value)))
     conn.commit()
@@ -149,7 +154,7 @@ def set_setting(chat_id, key, value):
 def add_admin(user_id, role="admin"):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO admins (user_id, role) VALUES (?, ?)", (user_id, role))
+    c.execute("INSERT OR REPLACE INTO admins VALUES (?, ?)", (user_id, role))
     conn.commit()
     conn.close()
 
@@ -184,7 +189,7 @@ def get_all_admins():
 def save_group(chat_id, title):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO groups (chat_id, title) VALUES (?, ?)", (chat_id, title))
+    c.execute("INSERT OR REPLACE INTO groups VALUES (?, ?)", (chat_id, title))
     conn.commit()
     conn.close()
 
@@ -198,14 +203,124 @@ def get_groups():
     return rows
 
 
-# ================= MEMBER =================
 def save_member(chat_id, user_id, username, full_name):
     conn = get_conn()
     c = conn.cursor()
     c.execute("""
-    INSERT OR REPLACE INTO members (chat_id, user_id, username, full_name)
-    VALUES (?, ?, ?, ?)
+    INSERT OR REPLACE INTO members VALUES (?, ?, ?, ?)
     """, (chat_id, user_id, username, full_name))
+    conn.commit()
+    conn.close()
+
+
+# ================= OPERATOR =================
+def is_operator(chat_id, user_id=None, username=None):
+    return get_admin(user_id) is not None
+
+
+# ================= TRANSACTIONS =================
+def add_transaction(chat_id, user_id, username, display_name,
+                    target_name, kind, raw_amount, unit_amount,
+                    rate_used, fee_used, note, original_text):
+    conn = get_conn()
+    c = conn.cursor()
+
+    c.execute("""
+    INSERT INTO transactions (
+        chat_id, user_id, username, display_name,
+        target_name, kind, raw_amount, unit_amount,
+        rate_used, fee_used, note, original_text, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        chat_id, user_id, username, display_name,
+        target_name, kind, raw_amount, unit_amount,
+        rate_used, fee_used, note, original_text,
+        int(time.time())
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_last_transaction(chat_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+    SELECT * FROM transactions
+    WHERE chat_id=? AND undone=0
+    ORDER BY id DESC LIMIT 1
+    """, (chat_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def undo_transaction(tx_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE transactions SET undone=1 WHERE id=?", (tx_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_transactions(chat_id, start_ts=None, end_ts=None, user_id=None):
+    conn = get_conn()
+    c = conn.cursor()
+
+    query = "SELECT * FROM transactions WHERE chat_id=? AND undone=0"
+    params = [chat_id]
+
+    if start_ts:
+        query += " AND created_at>=?"
+        params.append(start_ts)
+
+    if end_ts:
+        query += " AND created_at<=?"
+        params.append(end_ts)
+
+    if user_id:
+        query += " AND user_id=?"
+        params.append(user_id)
+
+    c.execute(query, params)
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
+# ================= TRIAL =================
+def set_trial_code(code):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("DELETE FROM trial_code")
+    c.execute("INSERT INTO trial_code VALUES (1, ?)", (code,))
+    conn.commit()
+    conn.close()
+
+
+def get_trial_code():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT code FROM trial_code LIMIT 1")
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else ""
+
+
+def has_claimed_free_trial(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM trial_users WHERE user_id=?", (user_id,))
+    exists = c.fetchone()
+    conn.close()
+    return bool(exists)
+
+
+def mark_claimed_free_trial(user_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO trial_users VALUES (?)", (user_id,))
     conn.commit()
     conn.close()
 
@@ -214,13 +329,17 @@ def save_member(chat_id, user_id, username, full_name):
 def add_access_user(user_id, username, granted_by=None, expires_at=None):
     conn = get_conn()
     c = conn.cursor()
-    now = int(time.time())
 
     c.execute("""
     INSERT OR REPLACE INTO access_users
-    (user_id, username, granted_by, granted_at, expires_at)
     VALUES (?, ?, ?, ?, ?)
-    """, (user_id, username, granted_by, now, expires_at))
+    """, (
+        user_id,
+        username,
+        granted_by,
+        int(time.time()),
+        expires_at
+    ))
 
     conn.commit()
     conn.close()
@@ -230,9 +349,9 @@ def has_access_user(user_id):
     conn = get_conn()
     c = conn.cursor()
     c.execute("SELECT 1 FROM access_users WHERE user_id=?", (user_id,))
-    exists = c.fetchone() is not None
+    row = c.fetchone()
     conn.close()
-    return exists
+    return bool(row)
 
 
 def get_access_users():
@@ -251,27 +370,6 @@ def get_access_user_by_id(user_id):
     row = c.fetchone()
     conn.close()
     return row
-
-
-# ================= EXPIRY =================
-def has_expiry_notice(user_id, key):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM expiry_notice WHERE user_id=? AND notice_key=?", (user_id, key))
-    row = c.fetchone()
-    conn.close()
-    return bool(row)
-
-
-def add_expiry_notice(user_id, key):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute("""
-    INSERT OR IGNORE INTO expiry_notice (user_id, notice_key)
-    VALUES (?, ?)
-    """, (user_id, key))
-    conn.commit()
-    conn.close()
 
 
 # ================= RENT =================
@@ -313,6 +411,15 @@ def get_pending_rental_orders():
     return rows
 
 
+def get_rental_orders_by_status(status):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM rental_orders WHERE status=?", (status,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+
 def mark_rental_order_paid(order_code, expires_at=None):
     conn = get_conn()
     c = conn.cursor()
@@ -328,26 +435,46 @@ def mark_rental_order_paid(order_code, expires_at=None):
 def mark_rental_order_rejected(order_code):
     conn = get_conn()
     c = conn.cursor()
-    c.execute("""
-    UPDATE rental_orders SET status='rejected'
-    WHERE order_code=?
-    """, (order_code,))
+    c.execute("UPDATE rental_orders SET status='rejected' WHERE order_code=?", (order_code,))
     conn.commit()
     conn.close()
-    
-def get_all_button_configs():
+
+
+# ================= WALLET =================
+def add_wallet_check(address, result):
     conn = get_conn()
     c = conn.cursor()
-
     c.execute("""
-    CREATE TABLE IF NOT EXISTS button_configs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        text TEXT,
-        url TEXT
-    )
-    """)
+    INSERT INTO wallet_checks (address, result, created_at)
+    VALUES (?, ?, ?)
+    """, (address, result, int(time.time())))
+    conn.commit()
+    conn.close()
 
-    c.execute("SELECT text, url FROM button_configs")
+
+def get_wallet_checks_page(page=1, page_size=10):
+    offset = (page - 1) * page_size
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+    SELECT * FROM wallet_checks
+    ORDER BY id DESC
+    LIMIT ? OFFSET ?
+    """, (page_size, offset))
     rows = c.fetchall()
     conn.close()
     return rows
+
+
+def count_wallet_checks():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM wallet_checks")
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+# ================= BUTTON CONFIG =================
+def get_all_button_configs():
+    return []
