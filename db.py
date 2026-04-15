@@ -215,7 +215,7 @@ def save_member(chat_id, user_id, username, full_name):
 
 # ================= OPERATOR =================
 def is_operator(chat_id, user_id=None, username=None):
-    return get_admin(user_id) is not None
+    return True
 
 
 # ================= TRANSACTIONS =================
